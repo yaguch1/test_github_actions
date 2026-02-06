@@ -7,16 +7,17 @@ jobs:
   create_issue:
     runs-on: ubuntu-latest
     permissions:
-      issues: write
+      contents: read  # リポジトリ読み込み権限
+      issues: write    # Issue作成権限
     steps:
-      - name: Checkout repository # ステップ1：リポジトリの中身を読み込む
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create an issue # ステップ2：Issueを作る
+      - name: Create an issue
         run: |
           gh issue create \
-            --title "実験：今度こそ成功！" \
-            --body "チェックアウトを覚えたので、もう怖くありません。" \
+            --title "実験：三度目の正直！" \
+            --body "Privateリポジトリの壁を越えました。" \
             --assignee "@me"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
