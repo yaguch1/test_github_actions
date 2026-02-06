@@ -1,0 +1,2 @@
+# test_github_actions
+GithubActionsの自動化テスト
