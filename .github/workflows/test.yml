@@ -1,19 +1,22 @@
 name: Manual Issue Creator
 
 on:
-  workflow_dispatch: # 手動実行ボタンを出す魔法の言葉
+  workflow_dispatch:
 
 jobs:
   create_issue:
     runs-on: ubuntu-latest
-    permissions: # Issueを作るために必要な権限
+    permissions:
       issues: write
     steps:
-      - name: Create an issue
+      - name: Checkout repository # ステップ1：リポジトリの中身を読み込む
+        uses: actions/checkout@v4
+
+      - name: Create an issue # ステップ2：Issueを作る
         run: |
           gh issue create \
-            --title "実験：自動化への第一歩" \
-            --body "これが表示されたら成功です！" \
+            --title "実験：今度こそ成功！" \
+            --body "チェックアウトを覚えたので、もう怖くありません。" \
             --assignee "@me"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
