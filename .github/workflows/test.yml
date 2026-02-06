@@ -16,8 +16,8 @@ jobs:
       - name: Create an issue
         run: |
           gh issue create \
-            --title "実験：三度目の正直！" \
-            --body "Privateリポジトリの壁を越えました。" \
-            --assignee "@me"
+            --title "実験：四度目の正直（完結編）" \
+            --body "ついにロボットの壁を越えました。" \
+            --assignee "yaguch1"  # ここをあなたのIDに変える！
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
