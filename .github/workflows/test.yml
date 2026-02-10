@@ -18,22 +18,20 @@ jobs:
     permissions:
       contents: write
       issues: write
-      pull-requests: write
+      pull-requests: write # GraphQLの権限を補完するために追加
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 1. Parse Version and Logic
+      - name: 1. Parse Version
         id: logic
         run: |
           OLD="${{ github.event.inputs.old_version }}"
           NEW="${{ github.event.inputs.new_version }}"
           if [[ "${OLD%%.*}" != "${NEW%%.*}" ]]; then
             echo "type=MAJOR" >> $GITHUB_OUTPUT
-          elif [[ "${OLD%.*}" != "${NEW%.*}" ]]; then
-            echo "type=MINOR" >> $GITHUB_OUTPUT
           else
-            echo "type=PATCH" >> $GITHUB_OUTPUT
+            echo "type=MINOR" >> $GITHUB_OUTPUT
           fi
 
       - name: 2. Pick Person
@@ -41,47 +39,35 @@ jobs:
         run: |
           LIST="yaguch1,yaguch1"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
-          # ファイルから読み込み、なければ0
           INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
-          # 数値以外が入っていた場合（空文字など）の対策
           if ! [[ "$INDEX" =~ ^[0-9]+$ ]]; then INDEX=0; fi
-          
           PICKED=${MEMBERS[$INDEX]}
           NEXT_INDEX=$(( (INDEX + 1) % ${#MEMBERS[@]} ))
           echo $NEXT_INDEX > last_index.txt
           echo "picked=$PICKED" >> $GITHUB_OUTPUT
 
-      - name: 3. Create and Link Issue
+      - name: 3. Create Issue
         id: create_issue
         run: |
           TYPE="${{ steps.logic.outputs.type }}"
           OLD_V="${{ github.event.inputs.old_version }}"
           NEW_V="${{ github.event.inputs.new_version }}"
           ASSIGNEE="${{ steps.rotation.outputs.picked }}"
+          PARENT_ISSUE=$(cat parent_issue_number.txt 2>/dev/null || echo "")
+
+          # シンプルなコマンドに絞る
+          NEW_ISSUE_URL=$(gh issue create \
+            --title "Metabase v${OLD_V} -> v${NEW_V} (${TYPE})" \
+            --body "v${OLD_V} 完了後に着手。担当: @${ASSIGNEE}" \
+            --assignee "$ASSIGNEE")
           
-          # 親Issue番号の読み込み
-          if [ -f parent_issue_number.txt ]; then
-            PARENT_ISSUE=$(cat parent_issue_number.txt)
-          else
-            PARENT_ISSUE=""
-          fi
-
-          TITLE="Metabase v${OLD_V} -> v${NEW_V} (${TYPE})"
-          BODY="v${OLD_V} が完了していることを確認してから着手してください。担当：@${ASSIGNEE}"
-
-          # Issue作成
-          NEW_ISSUE_URL=$(gh issue create --title "$TITLE" --body "$BODY" --assignee "$ASSIGNEE")
           NEW_ISSUE_NUM=${NEW_ISSUE_URL##*/}
-          echo "new_issue_num=$NEW_ISSUE_NUM" >> $GITHUB_OUTPUT
-
-          # 親Issueへの紐付けロジック
+          
+          # 親Issueへのリンク（複雑な編集はやめて、コメントだけにする）
           if [ "$TYPE" == "MAJOR" ]; then
             echo $NEW_ISSUE_NUM > parent_issue_number.txt
           elif [ ! -z "$PARENT_ISSUE" ]; then
-            gh issue comment $PARENT_ISSUE --body "子課題を作成しました: #$NEW_ISSUE_NUM" || true
-            CURRENT_BODY=$(gh issue view $PARENT_ISSUE --json body -q .body)
-            gh issue edit $PARENT_ISSUE --body "${CURRENT_BODY}
-          - [ ] #$NEW_ISSUE_NUM" || true
+            gh issue comment $PARENT_ISSUE --body "Sub-task created: #$NEW_ISSUE_NUM" || true
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,7 +77,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add last_index.txt parent_issue_number.txt
-          git commit -m "docs: update rotation and parent [skip ci]" || echo "No changes"
+          git commit -m "docs: update rotation [skip ci]" || echo "No changes"
           git push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
