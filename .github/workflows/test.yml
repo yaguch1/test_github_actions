@@ -1,4 +1,4 @@
-name: Metabase Update Automation
+name: Metabase Update Automation (Standard Token)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
     permissions:
       contents: write
       issues: write
-      pull-requests: write # GraphQLの権限を補完するために追加
+      pull-requests: write # GraphQLの権限を広げるおまじない
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,6 +37,7 @@ jobs:
       - name: 2. Pick Person
         id: rotation
         run: |
+          # 自分のIDを2つ並べて交互にテスト
           LIST="yaguch1,yaguch1"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
           INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
@@ -55,19 +56,25 @@ jobs:
           ASSIGNEE="${{ steps.rotation.outputs.picked }}"
           PARENT_ISSUE=$(cat parent_issue_number.txt 2>/dev/null || echo "")
 
-          # シンプルなコマンドに絞る
+          TITLE="Metabase v${OLD_V} -> v${NEW_V} (${TYPE})"
+          BODY="v${OLD_V} 完了後に着手。担当: @${ASSIGNEE}"
+
+          # 作成時にアサインをせず、作成のみ実行（権限エラーを避ける工夫）
           NEW_ISSUE_URL=$(gh issue create \
-            --title "Metabase v${OLD_V} -> v${NEW_V} (${TYPE})" \
-            --body "v${OLD_V} 完了後に着手。担当: @${ASSIGNEE}" \
-            --assignee "$ASSIGNEE")
+            --title "$TITLE" \
+            --body "$BODY")
           
           NEW_ISSUE_NUM=${NEW_ISSUE_URL##*/}
+          echo "new_issue_num=$NEW_ISSUE_NUM" >> $GITHUB_OUTPUT
+
+          # 作成した後にアサイン（失敗しても全体を止めない）
+          gh issue edit $NEW_ISSUE_NUM --add-assignee "$ASSIGNEE" || echo "Assign failed but continuing"
           
-          # 親Issueへのリンク（複雑な編集はやめて、コメントだけにする）
           if [ "$TYPE" == "MAJOR" ]; then
             echo $NEW_ISSUE_NUM > parent_issue_number.txt
           elif [ ! -z "$PARENT_ISSUE" ]; then
-            gh issue comment $PARENT_ISSUE --body "Sub-task created: #$NEW_ISSUE_NUM" || true
+            # コメントのみ。本文編集(edit)は権限が厳しいので避ける
+            gh issue comment $PARENT_ISSUE --body "Sub-task: #$NEW_ISSUE_NUM" || echo "Link failed but continuing"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,7 +84,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add last_index.txt parent_issue_number.txt
-          git commit -m "docs: update rotation [skip ci]" || echo "No changes"
+          git commit -m "docs: update rotation index [skip ci]" || echo "No changes"
           git push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
