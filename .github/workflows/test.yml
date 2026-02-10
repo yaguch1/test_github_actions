@@ -89,7 +89,3 @@ jobs:
           git push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            --body "ファイルを書き換えてコミットする方式で、順番にアサインしています。" \
-            --assignee "${{ steps.rotation.outputs.picked }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
