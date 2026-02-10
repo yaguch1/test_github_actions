@@ -15,15 +15,19 @@ on:
 jobs:
   check_version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Parse Versions
         id: version_logic
         run: |
-          # バージョンをドットで分割
           OLD="${{ github.event.inputs.old_version }}"
           NEW="${{ github.event.inputs.new_version }}"
           
-          # シェルの力を使って「どこが変わったか」判定（ここは本来もっと複雑ですが、まずはイメージ）
           if [[ "${OLD%%.*}" != "${NEW%%.*}" ]]; then
             echo "type=major" >> $GITHUB_OUTPUT
           elif [[ "${OLD%.*}" != "${NEW%.*}" ]]; then
@@ -32,16 +36,16 @@ jobs:
             echo "type=patch" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create SubIssue for Patch
-        if: steps.version_logic.outputs.type == 'patch'
+      - name: Create SubIssue
+        # ここで判定結果（type）を使って、どのタイトルでIssueを作るか決める
         run: |
-          gh issue create --title "【パッチ】v${{ github.event.inputs.old_version }} -> v${{ github.event.inputs.new_version }}" --body "パッチなのでサクッとやりましょう。"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create SubIssue for Minor
-        if: steps.version_logic.outputs.type == 'minor'
-        run: |
-          gh issue create --title "【マイナー】v${{ github.event.inputs.old_version }} -> v${{ github.event.inputs.new_version }}" --body "マイナーアップデートです。前のIssueが終わってるか確認してね。"
+          TYPE="${{ steps.version_logic.outputs.type }}"
+          OLD_V="${{ github.event.inputs.old_version }}"
+          NEW_V="${{ github.event.inputs.new_version }}"
+          
+          gh issue create \
+            --title "【${TYPE^^}】v${OLD_V} -> v${NEW_V}" \
+            --body "${TYPE}アップデートです。前のIssueが終わっていることを確認してから着手してください。" \
+            --assignee "yaguch1"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
