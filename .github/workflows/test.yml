@@ -1,21 +1,46 @@
-- name: Pick Next Person
+name: Metabase Version Logic Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: '前のバージョン'
+        default: '0.45.1'
+        required: true
+      new_version:
+        description: '新しいバージョン'
+        default: '0.45.2'
+        required: true
+
+jobs:
+  check_and_rotate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      variables: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pick Next Person
         id: pick_person
         run: |
-          # 1. 名簿を配列にする
-          IFS=',' read -r -a MEMBERS <<< "${{ vars.MEMBER_LIST }}"
-          COUNT=${#MEMBERS[@]}
+          # [ ] やスペースを除去して純粋なリストにする
+          LIST=$(echo "${{ vars.MEMBER_LIST }}" | tr -d '[] ')
           INDEX=${{ vars.CURRENT_INDEX }}
           
-          # 2. 担当者を決定
-          PICKED=${MEMBERS[$INDEX]}
-          echo "picked=$PICKED" >> $GITHUB_OUTPUT
+          IFS=',' read -r -a MEMBERS <<< "$LIST"
+          COUNT=${#MEMBERS[@]}
           
-          # 3. 次のインデックスを計算
+          PICKED=${MEMBERS[$INDEX]}
           NEXT_INDEX=$(( (INDEX + 1) % COUNT ))
+          
+          echo "picked=$PICKED" >> $GITHUB_OUTPUT
           echo "next_index=$NEXT_INDEX" >> $GITHUB_OUTPUT
-          echo "Current person: $PICKED, Next index: $NEXT_INDEX"
+          echo "Current: $PICKED (Index: $INDEX), Next Index: $NEXT_INDEX"
 
-      - name: Update Current Index
+      - name: Update Index
         run: |
           gh api \
             --method PATCH \
@@ -24,15 +49,11 @@
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create SubIssue
+      - name: Create Issue
         run: |
           gh issue create \
-            --title "輪番テスト：次は ${{ steps.pick_person.outputs.picked }} さんの番" \
-            --body "自動アサインの実験中です。" \
+            --title "輪番テスト：次は ${{ steps.pick_person.outputs.picked }} さん" \
+            --body "自動アサイン成功です！" \
             --assignee "${{ steps.pick_person.outputs.picked }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            --body "${TYPE}アップデートです。前のIssueが終わっていることを確認してから着手してください。" \
-            --assignee "yaguch1"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
