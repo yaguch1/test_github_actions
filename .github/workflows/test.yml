@@ -6,14 +6,12 @@ on:
       old_version:
         description: '前のバージョン'
         default: '0.45.1'
-        required: true
       new_version:
         description: '新しいバージョン'
         default: '0.45.2'
-        required: true
 
 jobs:
-  check_and_rotate:
+  check_and_assign:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,36 +20,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pick Next Person
+      - name: Pick Person (Random or Fixed)
         id: pick_person
         run: |
-          # [ ] やスペースを除去して純粋なリストにする
-          LIST=$(echo "${{ vars.MEMBER_LIST }}" | tr -d '[] ')
-          INDEX=${{ vars.CURRENT_INDEX }}
-          
+          # 名簿を定義
+          LIST="yaguch1"  # 実験用なのであなたのIDだけでOK
           IFS=',' read -r -a MEMBERS <<< "$LIST"
           COUNT=${#MEMBERS[@]}
           
+          # ランダムまたは現在時刻を使って一人選ぶ（APIを使わない工夫）
+          INDEX=$(( $(date +%s) % COUNT ))
           PICKED=${MEMBERS[$INDEX]}
-          NEXT_INDEX=$(( (INDEX + 1) % COUNT ))
           
           echo "picked=$PICKED" >> $GITHUB_OUTPUT
-          echo "next_index=$NEXT_INDEX" >> $GITHUB_OUTPUT
-          echo "Current: $PICKED (Index: $INDEX), Next Index: $NEXT_INDEX"
-
-      - name: Update Index
-        run: |
-          gh api \
-            --method PATCH \
-            /repos/${{ github.repository }}/actions/variables/CURRENT_INDEX \
-            -f value="${{ steps.pick_person.outputs.next_index }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "Selected: $PICKED"
 
       - name: Create Issue
         run: |
           gh issue create \
-            --title "輪番テスト：次は ${{ steps.pick_person.outputs.picked }} さん" \
+            --title "実験成功：${{ steps.pick_person.outputs.picked }} さんにアサイン" \
+            --body "APIの壁を越えて、ついに自動アサインが完了しました！" \
+            --assignee "${{ steps.pick_person.outputs.picked }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             --body "自動アサイン成功です！" \
             --assignee "${{ steps.pick_person.outputs.picked }}"
         env:
