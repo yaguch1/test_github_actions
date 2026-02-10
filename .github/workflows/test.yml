@@ -1,23 +1,47 @@
-name: Manual Issue Creator
+name: Metabase Version Logic Test
 
 on:
   workflow_dispatch:
+    inputs:
+      old_version:
+        description: '前のバージョン (例: 0.45.1)'
+        required: true
+        default: '0.45.1'
+      new_version:
+        description: '新しいバージョン (例: 0.46.0)'
+        required: true
+        default: '0.46.0'
 
 jobs:
-  create_issue:
+  check_version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read  # リポジトリ読み込み権限
-      issues: write    # Issue作成権限
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Create an issue
+      - name: Parse Versions
+        id: version_logic
         run: |
-          gh issue create \
-            --title "実験：四度目の正直（完結編）" \
-            --body "ついにロボットの壁を越えました。" \
-            --assignee "yaguch1"  # ここをあなたのIDに変える！
+          # バージョンをドットで分割
+          OLD="${{ github.event.inputs.old_version }}"
+          NEW="${{ github.event.inputs.new_version }}"
+          
+          # シェルの力を使って「どこが変わったか」判定（ここは本来もっと複雑ですが、まずはイメージ）
+          if [[ "${OLD%%.*}" != "${NEW%%.*}" ]]; then
+            echo "type=major" >> $GITHUB_OUTPUT
+          elif [[ "${OLD%.*}" != "${NEW%.*}" ]]; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          else
+            echo "type=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create SubIssue for Patch
+        if: steps.version_logic.outputs.type == 'patch'
+        run: |
+          gh issue create --title "【パッチ】v${{ github.event.inputs.old_version }} -> v${{ github.event.inputs.new_version }}" --body "パッチなのでサクッとやりましょう。"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create SubIssue for Minor
+        if: steps.version_logic.outputs.type == 'minor'
+        run: |
+          gh issue create --title "【マイナー】v${{ github.event.inputs.old_version }} -> v${{ github.event.inputs.new_version }}" --body "マイナーアップデートです。前のIssueが終わってるか確認してね。"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
