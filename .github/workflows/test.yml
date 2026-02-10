@@ -1,66 +1,94 @@
-name: Metabase Version Logic Test
+name: Metabase Update Automation
 
 on:
   workflow_dispatch:
     inputs:
       old_version:
-        description: '前のバージョン'
+        description: '現在のバージョン (例: 0.45.1)'
+        required: true
         default: '0.45.1'
       new_version:
-        description: '新しいバージョン'
-        default: '0.45.2'
+        description: '新しいバージョン (例: 0.46.0)'
+        required: true
+        default: '0.46.0'
 
 jobs:
-  check_and_rotate:
+  update-process:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 重要：ファイルを書き換えてコミットするために必要
+      contents: write
       issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pick Person and Update Index
+      - name: 1. Parse Version and Logic
+        id: logic
+        run: |
+          OLD="${{ github.event.inputs.old_version }}"
+          NEW="${{ github.event.inputs.new_version }}"
+          
+          # メジャー・マイナー・パッチの判定
+          if [[ "${OLD%%.*}" != "${NEW%%.*}" ]]; then
+            echo "type=MAJOR" >> $GITHUB_OUTPUT
+          elif [[ "${OLD%.*}" != "${NEW%.*}" ]]; then
+            echo "type=MINOR" >> $GITHUB_OUTPUT
+          else
+            echo "type=PATCH" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 2. Pick Person (Rotation)
         id: rotation
         run: |
-          # 1. 名簿の定義（テスト用にあなたのIDを2つ並べています）
-          LIST="yaguch1,yaguch1"
+          # 名簿（ここにチームメンバーのIDを並べる）
+          LIST="yaguch1,tanaka,sato"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
-          COUNT=${#MEMBERS[@]}
-
-          # 2. 現在のインデックスをファイルから読み込む (ファイルがない場合は0)
-          # last_index.txt というファイルに「何番目の人か」を保存します
+          
           INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
-          
-          # 3. 担当者を決定
           PICKED=${MEMBERS[$INDEX]}
-          echo "picked=$PICKED" >> $GITHUB_OUTPUT
+          NEXT_INDEX=$(( (INDEX + 1) % ${#MEMBERS[@]} ))
           
-          # 4. 次のインデックスを計算してファイルに保存（上書き）
-          NEXT_INDEX=$(( (INDEX + 1) % COUNT ))
           echo $NEXT_INDEX > last_index.txt
-          
-          echo "Current Assignee: $PICKED (Index: $INDEX)"
-          echo "Next Index: $NEXT_INDEX"
+          echo "picked=$PICKED" >> $GITHUB_OUTPUT
 
-      - name: Commit and Push changes
+      - name: 3. Create Issue
+        id: create_issue
         run: |
-          # Gitの設定（ロボットが作業しているように見せる）
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # last_index.txt の変更を保存してリポジトリに反映
-          git add last_index.txt
-          # [skip ci] を入れることで、このコミットでActionsが無限ループするのを防ぎます
-          git commit -m "docs: update rotation index to next [skip ci]" || echo "No changes to commit"
-          git push
+          TYPE="${{ steps.logic.outputs.type }}"
+          OLD_V="${{ github.event.inputs.old_version }}"
+          NEW_V="${{ github.event.inputs.new_version }}"
+          ASSIGNEE="${{ steps.rotation.outputs.picked }}"
+          PARENT_ISSUE=$(cat parent_issue_number.txt 2>/dev/null || echo "")
+
+          TITLE="Metabase v${OLD_V} -> v${NEW_V} へのバージョンアップ (${TYPE})"
+          BODY="v${OLD_V} がリリースされていることを確認してから着手してください。担当：@${ASSIGNEE}"
+
+          # Issue作成
+          NEW_ISSUE_URL=$(gh issue create --title "$TITLE" --body "$BODY" --assignee "$ASSIGNEE")
+          NEW_ISSUE_NUM=${NEW_ISSUE_URL##*/}
+          echo "new_issue_num=$NEW_ISSUE_NUM" >> $GITHUB_OUTPUT
+
+          # メジャーアップデートなら、これを親Issueとして保存
+          if [ "$TYPE" == "MAJOR" ]; then
+            echo $NEW_ISSUE_NUM > parent_issue_number.txt
+          elif [ ! -z "$PARENT_ISSUE" ]; then
+            # マイナー/パッチなら親Issueにタスクリストとして追記（紐付け）
+            gh issue comment $PARENT_ISSUE --body "Sub-task created: #$NEW_ISSUE_NUM"
+            # 親Issueの本文を編集してチェックリストを追加する高度な技
+            gh issue edit $PARENT_ISSUE --body "$(gh issue view $PARENT_ISSUE --json body -q .body)$(echo -e "\n- [ ] #$NEW_ISSUE_NUM")"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Issue
+      - name: 4. Commit and Push Changes
         run: |
-          gh issue create \
-            --title "輪番テスト：次は ${{ steps.rotation.outputs.picked }} さん" \
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_index.txt parent_issue_number.txt
+          git commit -m "docs: update rotation and parent issue [skip ci]" || echo "No changes"
+          git push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             --body "ファイルを書き換えてコミットする方式で、順番にアサインしています。" \
             --assignee "${{ steps.rotation.outputs.picked }}"
         env:
