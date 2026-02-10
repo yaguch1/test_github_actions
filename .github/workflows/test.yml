@@ -1,91 +1,39 @@
-name: Metabase Update Automation
-
-on:
-  workflow_dispatch:
-    inputs:
-      old_version:
-        description: '現在のバージョン (例: 0.45.1)'
-        required: true
-        default: '0.45.1'
-      new_version:
-        description: '新しいバージョン (例: 0.46.0)'
-        required: true
-        default: '0.46.0'
-
-jobs:
-  update-process:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      issues: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: 1. Parse Version and Logic
-        id: logic
-        run: |
-          OLD="${{ github.event.inputs.old_version }}"
-          NEW="${{ github.event.inputs.new_version }}"
-          
-          # メジャー・マイナー・パッチの判定
-          if [[ "${OLD%%.*}" != "${NEW%%.*}" ]]; then
-            echo "type=MAJOR" >> $GITHUB_OUTPUT
-          elif [[ "${OLD%.*}" != "${NEW%.*}" ]]; then
-            echo "type=MINOR" >> $GITHUB_OUTPUT
-          else
-            echo "type=PATCH" >> $GITHUB_OUTPUT
-          fi
-
-      - name: 2. Pick Person (Rotation)
-        id: rotation
-        run: |
-          # 名簿（ここにチームメンバーのIDを並べる）
-          LIST="yaguch1,tanaka,sato"
-          IFS=',' read -r -a MEMBERS <<< "$LIST"
-          
-          INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
-          PICKED=${MEMBERS[$INDEX]}
-          NEXT_INDEX=$(( (INDEX + 1) % ${#MEMBERS[@]} ))
-          
-          echo $NEXT_INDEX > last_index.txt
-          echo "picked=$PICKED" >> $GITHUB_OUTPUT
-
-      - name: 3. Create Issue
+- name: 3. Create Issue
         id: create_issue
         run: |
           TYPE="${{ steps.logic.outputs.type }}"
           OLD_V="${{ github.event.inputs.old_version }}"
           NEW_V="${{ github.event.inputs.new_version }}"
           ASSIGNEE="${{ steps.rotation.outputs.picked }}"
-          PARENT_ISSUE=$(cat parent_issue_number.txt 2>/dev/null || echo "")
+          
+          # ファイルが存在しない、または空の場合の対策
+          if [ -f parent_issue_number.txt ]; then
+            PARENT_ISSUE=$(cat parent_issue_number.txt)
+          else
+            PARENT_ISSUE=""
+          fi
 
           TITLE="Metabase v${OLD_V} -> v${NEW_V} へのバージョンアップ (${TYPE})"
           BODY="v${OLD_V} がリリースされていることを確認してから着手してください。担当：@${ASSIGNEE}"
 
-          # Issue作成
+          # 1. Issue作成
           NEW_ISSUE_URL=$(gh issue create --title "$TITLE" --body "$BODY" --assignee "$ASSIGNEE")
           NEW_ISSUE_NUM=${NEW_ISSUE_URL##*/}
           echo "new_issue_num=$NEW_ISSUE_NUM" >> $GITHUB_OUTPUT
 
-          # メジャーアップデートなら、これを親Issueとして保存
+          # 2. 親Issueの更新ロジック
           if [ "$TYPE" == "MAJOR" ]; then
+            # メジャーなら新しく親番号を書き込む
             echo $NEW_ISSUE_NUM > parent_issue_number.txt
           elif [ ! -z "$PARENT_ISSUE" ]; then
-            # マイナー/パッチなら親Issueにタスクリストとして追記（紐付け）
-            gh issue comment $PARENT_ISSUE --body "Sub-task created: #$NEW_ISSUE_NUM"
-            # 親Issueの本文を編集してチェックリストを追加する高度な技
-            gh issue edit $PARENT_ISSUE --body "$(gh issue view $PARENT_ISSUE --json body -q .body)$(echo -e "\n- [ ] #$NEW_ISSUE_NUM")"
+            # マイナー/パッチかつ親番号がある場合のみ紐付けを実行
+            # エラーが起きても全体を止めないように "|| true" をつける
+            gh issue comment $PARENT_ISSUE --body "Sub-task created: #$NEW_ISSUE_NUM" || true
+            
+            # 親の本文を取得して、新しい子Issueを追記する
+            CURRENT_BODY=$(gh issue view $PARENT_ISSUE --json body -q .body)
+            gh issue edit $PARENT_ISSUE --body "${CURRENT_BODY}
+          - [ ] #$NEW_ISSUE_NUM" || true
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 4. Commit and Push Changes
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_index.txt parent_issue_number.txt
-          git commit -m "docs: update rotation and parent issue [skip ci]" || echo "No changes"
-          git push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
