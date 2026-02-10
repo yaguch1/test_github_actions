@@ -11,35 +11,57 @@ on:
         default: '0.45.2'
 
 jobs:
-  check_and_assign:
+  check_and_rotate:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # 重要：ファイルを書き換えてコミットするために必要
       issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pick Person
-        id: pick_person
+      - name: Pick Person and Update Index
+        id: rotation
         run: |
-          # 実験用なのであなたのIDをセット（カンマ区切りで複数も可）
-          LIST="yaguch1"
+          # 1. 名簿の定義（テスト用にあなたのIDを2つ並べています）
+          LIST="yaguch1,yaguch1"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
           COUNT=${#MEMBERS[@]}
+
+          # 2. 現在のインデックスをファイルから読み込む (ファイルがない場合は0)
+          # last_index.txt というファイルに「何番目の人か」を保存します
+          INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
           
-          # 時刻を使って一人選ぶ（一人なら必ず0番目が選ばれる）
-          INDEX=$(( $(date +%s) % COUNT ))
+          # 3. 担当者を決定
           PICKED=${MEMBERS[$INDEX]}
-          
           echo "picked=$PICKED" >> $GITHUB_OUTPUT
-          echo "Selected: $PICKED"
+          
+          # 4. 次のインデックスを計算してファイルに保存（上書き）
+          NEXT_INDEX=$(( (INDEX + 1) % COUNT ))
+          echo $NEXT_INDEX > last_index.txt
+          
+          echo "Current Assignee: $PICKED (Index: $INDEX)"
+          echo "Next Index: $NEXT_INDEX"
+
+      - name: Commit and Push changes
+        run: |
+          # Gitの設定（ロボットが作業しているように見せる）
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # last_index.txt の変更を保存してリポジトリに反映
+          git add last_index.txt
+          # [skip ci] を入れることで、このコミットでActionsが無限ループするのを防ぎます
+          git commit -m "docs: update rotation index to next [skip ci]" || echo "No changes to commit"
+          git push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Issue
         run: |
           gh issue create \
-            --title "実験成功：${{ steps.pick_person.outputs.picked }} さんにアサイン" \
-            --body "APIの壁を越えて、ついに自動アサインが完了しました！" \
-            --assignee "${{ steps.pick_person.outputs.picked }}"
+            --title "輪番テスト：次は ${{ steps.rotation.outputs.picked }} さん" \
+            --body "ファイルを書き換えてコミットする方式で、順番にアサインしています。" \
+            --assignee "${{ steps.rotation.outputs.picked }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
