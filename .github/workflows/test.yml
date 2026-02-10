@@ -20,15 +20,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pick Person (Random or Fixed)
+      - name: Pick Person
         id: pick_person
         run: |
-          # 名簿を定義
-          LIST="yaguch1"  # 実験用なのであなたのIDだけでOK
+          # 実験用なのであなたのIDをセット（カンマ区切りで複数も可）
+          LIST="yaguch1"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
           COUNT=${#MEMBERS[@]}
           
-          # ランダムまたは現在時刻を使って一人選ぶ（APIを使わない工夫）
+          # 時刻を使って一人選ぶ（一人なら必ず0番目が選ばれる）
           INDEX=$(( $(date +%s) % COUNT ))
           PICKED=${MEMBERS[$INDEX]}
           
@@ -40,10 +40,6 @@ jobs:
           gh issue create \
             --title "実験成功：${{ steps.pick_person.outputs.picked }} さんにアサイン" \
             --body "APIの壁を越えて、ついに自動アサインが完了しました！" \
-            --assignee "${{ steps.pick_person.outputs.picked }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            --body "自動アサイン成功です！" \
             --assignee "${{ steps.pick_person.outputs.picked }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
