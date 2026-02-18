@@ -1,20 +1,40 @@
-name: Manual Issue Creator
+name: Metabase Release Check
+
 on:
+  schedule:
+    - cron: '0 0 * * *' # Daily at 00:00 UTC (9:00 JST)
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no issues created)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  issues: write
+  contents: read
+
 jobs:
-  create_issue:
+  check-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read  # リポジトリ読み込み権限
-      issues: write    # Issue作成権限
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: Create an issue
-        run: |
-          gh issue create \
-            --title "Issueのタイトル" \
-            --body "Issueの本文" \
-            --assignee "yaguch1"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check Metabase Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ROTATION_MEMBERS: ${{ vars.ROTATION_MEMBERS }} # Expecting a repository variable: "user1,user2,user3"
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            node .github/scripts/check_metabase_release.js --dry-run
+          else
+            node .github/scripts/check_metabase_release.js
+          fi
