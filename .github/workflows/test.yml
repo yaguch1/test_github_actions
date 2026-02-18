@@ -18,7 +18,7 @@ jobs:
     permissions:
       contents: write
       issues: write
-      pull-requests: write # GraphQLの権限を広げるおまじない
+      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
       - name: 2. Pick Person
         id: rotation
         run: |
-          # 自分のIDを2つ並べて交互にテスト
+          # アサインリスト（ yaguch1さん以外のメンバーも追加可能です ）
           LIST="yaguch1,yaguch1"
           IFS=',' read -r -a MEMBERS <<< "$LIST"
           INDEX=$(cat last_index.txt 2>/dev/null || echo 0)
@@ -56,25 +56,23 @@ jobs:
           ASSIGNEE="${{ steps.rotation.outputs.picked }}"
           PARENT_ISSUE=$(cat parent_issue_number.txt 2>/dev/null || echo "")
 
-          TITLE="Metabase v${OLD_V} -> v${NEW_V} (${TYPE})"
-          BODY="v${OLD_V} 完了後に着手。担当: @${ASSIGNEE}"
-
-          # 作成時にアサインをせず、作成のみ実行（権限エラーを避ける工夫）
+          # エラー回避のため、タイトルと本文だけの最小構成で作成
+          # --assignee フラグは権限エラーの原因になりやすいため外しました
           NEW_ISSUE_URL=$(gh issue create \
-            --title "$TITLE" \
-            --body "$BODY")
+            --title "Metabase v${OLD_V} -> v${NEW_V} (${TYPE})" \
+            --body "v${OLD_V} 完了後に着手してください。担当: @${ASSIGNEE}")
           
           NEW_ISSUE_NUM=${NEW_ISSUE_URL##*/}
           echo "new_issue_num=$NEW_ISSUE_NUM" >> $GITHUB_OUTPUT
 
-          # 作成した後にアサイン（失敗しても全体を止めない）
-          gh issue edit $NEW_ISSUE_NUM --add-assignee "$ASSIGNEE" || echo "Assign failed but continuing"
+          # 作成「後」にアサインを試みる（失敗しても全体は止めない）
+          gh issue edit $NEW_ISSUE_NUM --add-assignee "$ASSIGNEE" || true
           
+          # 親Issueへの通知（コメントのみ）
           if [ "$TYPE" == "MAJOR" ]; then
             echo $NEW_ISSUE_NUM > parent_issue_number.txt
           elif [ ! -z "$PARENT_ISSUE" ]; then
-            # コメントのみ。本文編集(edit)は権限が厳しいので避ける
-            gh issue comment $PARENT_ISSUE --body "Sub-task: #$NEW_ISSUE_NUM" || echo "Link failed but continuing"
+            gh issue comment $PARENT_ISSUE --body "子課題が作成されました: #$NEW_ISSUE_NUM" || true
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
