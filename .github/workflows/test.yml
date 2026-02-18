@@ -6,6 +6,9 @@ jobs:
     permissions:
       issues: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4 # これが「地図」になります
+
       - name: Minimal Create Issue
         run: gh issue create --title "作り直し成功" --body "まずはここから"
         env:
