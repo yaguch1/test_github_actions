@@ -170,7 +170,7 @@ async function main() {
       method: 'POST',
       headers
     }, {
-      sub_issue_id: newChild.number
+      sub_issue_id: newChild.id
     });
     console.log('Sub-issue registered.');
   }
