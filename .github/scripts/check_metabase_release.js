@@ -44,7 +44,7 @@ async function main() {
     headers: { 'User-Agent': 'node.js' }
   });
 
-  const latestVersion = metabaseRelease.tagName; // e.g., v0.58.5
+  const latestVersion = metabaseRelease.tag_name; // e.g., v0.58.5
   console.log(`Latest version: ${latestVersion}`);
 
   // Parse version
@@ -62,7 +62,7 @@ async function main() {
   const headers = {
     'User-Agent': 'node.js',
     'Authorization': `token ${token}`,
-    'Accept': 'application/vnd.github.v3+json'
+    'Accept': 'application/vnd.github+json'
   };
 
   // 2. Check if Child Issue already exists
@@ -146,7 +146,7 @@ async function main() {
   if (isDryRun) {
     console.log(`[Dry Run] Would create Child Issue: "Update Metabase to ${latestVersion}"`);
     console.log(`[Dry Run] Would assign to: ${nextAssignee || 'No one'}`);
-    console.log(`[Dry Run] Would link to Parent Issue #${parentIssueNumber}`);
+    console.log(`[Dry Run] Would register as sub-issue of Parent Issue #${parentIssueNumber}`);
   } else {
     console.log(`Creating Child Issue for ${latestVersion}...`);
     const newChild = await request({
@@ -162,29 +162,17 @@ async function main() {
     });
     console.log(`Created Child Issue #${newChild.number} assigned to ${nextAssignee}`);
 
-    // 6. Update Parent Issue body with link
-    console.log(`Linking Child Issue to Parent Issue #${parentIssueNumber}...`);
-
-    // Need to fetch current body first to append safely? Or just append?
-    // We can just get the issue details, append the string, and update.
-    const parentIssueDetails = await request({
-      hostname: 'api.github.com',
-      path: `/repos/${repoOwner}/${repoName}/issues/${parentIssueNumber}`,
-      method: 'GET',
-      headers
-    });
-
-    const updatedBody = `${parentIssueDetails.body}\n- [ ] #${newChild.number} (${latestVersion})`;
-
+    // 6. Register Child Issue as Sub-issue of Parent
+    console.log(`Registering #${newChild.number} as sub-issue of #${parentIssueNumber}...`);
     await request({
       hostname: 'api.github.com',
-      path: `/repos/${repoOwner}/${repoName}/issues/${parentIssueNumber}`,
-      method: 'PATCH',
+      path: `/repos/${repoOwner}/${repoName}/issues/${parentIssueNumber}/sub_issues`,
+      method: 'POST',
       headers
     }, {
-      body: updatedBody
+      sub_issue_id: newChild.number
     });
-    console.log('Parent Issue updated.');
+    console.log('Sub-issue registered.');
   }
 }
 
