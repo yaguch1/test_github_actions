@@ -31,10 +31,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ROTATION_MEMBERS: ${{ vars.ROTATION_MEMBERS }} # Expecting a repository variable: "user1,user2,user3"
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             node .github/scripts/check_metabase_release.js --dry-run
           else
             node .github/scripts/check_metabase_release.js
           fi
+
