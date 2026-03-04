@@ -1,6 +1,8 @@
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
-// Helper to make HTTP requests
+// GitHub APIへのHTTPリクエストを行うヘルパー
 function request(options, body) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
@@ -11,10 +13,10 @@ function request(options, body) {
           try {
             resolve(JSON.parse(data));
           } catch (e) {
-            resolve(data);
+            reject(new Error(`レスポンスのJSONパースに失敗しました: ${data}`));
           }
         } else {
-          reject(new Error(`Request failed with status ${res.statusCode}: ${data}`));
+          reject(new Error(`ステータス ${res.statusCode} でリクエストが失敗しました: ${data}`));
         }
       });
     });
@@ -24,156 +26,187 @@ function request(options, body) {
   });
 }
 
-async function main() {
-  const token = process.env.GITHUB_TOKEN;
-  const repoOwner = process.env.GITHUB_REPOSITORY.split('/')[0];
-  const repoName = process.env.GITHUB_REPOSITORY.split('/')[1];
-  const rotationMembers = process.env.ROTATION_MEMBERS ? process.env.ROTATION_MEMBERS.split(',').map(m => m.trim()) : [];
-  const isDryRun = process.argv.includes('--dry-run');
-
-  if (!token) throw new Error('GITHUB_TOKEN is required');
-  if (rotationMembers.length === 0) console.warn('ROTATION_MEMBERS is empty. Issues will be unassigned.');
-  if (isDryRun) console.log('--- DRY RUN MODE: No issues will be created or updated ---');
-
-  // 1. Fetch Latest Metabase Release
-  console.log('Fetching latest Metabase release...');
-  const metabaseRelease = await request({
+// Metabaseの最新リリース情報を取得する
+// 戻り値: { latestVersion: string, versionMajorMinorX: string, releaseUrl: string }
+async function fetchLatestMetabaseRelease() {
+  console.log('Metabaseの最新リリースを取得しています...');
+  const release = await request({
     hostname: 'api.github.com',
     path: '/repos/metabase/metabase/releases/latest',
     method: 'GET',
     headers: { 'User-Agent': 'node.js' }
   });
 
-  const latestVersion = metabaseRelease.tag_name; // e.g., v0.58.5
-  console.log(`Latest version: ${latestVersion}`);
+  const metabaseLatestVersion = release.tag_name; // 例: v0.58.5
+  console.log(`最新バージョン: ${metabaseLatestVersion}`);
 
-  // Parse version
-  const versionMatch = latestVersion.match(/^v(\d+)\.(\d+)\.(\d+)$/);
+  const versionMatch = metabaseLatestVersion.match(/^v(\d+)\.(\d+)\.(\d+)$/);
   if (!versionMatch) {
-    console.error(`Could not parse version ${latestVersion}`);
-    return;
+    throw new Error(`バージョンのパースに失敗しました: ${metabaseLatestVersion}`);
   }
-  const major = versionMatch[1];
-  const minor = versionMatch[2];
-  const patch = versionMatch[3];
-  const versionMajorMinor = `v${major}.${minor}`; // v0.58
-  const versionMajorMinorX = `${versionMajorMinor}.x`; // v0.58.x
 
+  const [, major, minor] = versionMatch;
+  const versionMajorMinorX = `v${major}.${minor}.x`; // 例: v0.58.x
+
+  return { metabaseLatestVersion, versionMajorMinorX, releaseUrl: release.html_url };
+}
+
+// 指定バージョンの子Issueが既に存在するか確認する
+// 戻り値: boolean
+async function checkChildIssueExists(metabaseLatestVersion, { headers, repoOwner, repoName }) {
+  const query = `repo:${repoOwner}/${repoName} is:issue in:title label:metabase-update-issue "Update Metabase to ${metabaseLatestVersion}"`;
+  const result = await request({
+    hostname: 'api.github.com',
+    path: `/search/issues?q=${encodeURIComponent(query)}`,
+    method: 'GET',
+    headers
+  });
+  return result.total_count > 0;
+}
+
+// 親Issueを検索し、なければ新規作成する
+// 戻り値: number（親IssueのIssue番号）
+async function findOrCreateParentIssue(versionMajorMinorX, { headers, repoOwner, repoName, isDryRun }) {
+  const query = `repo:${repoOwner}/${repoName} is:issue in:title "Metabase Release ${versionMajorMinorX}"`;
+  const result = await request({
+    hostname: 'api.github.com',
+    path: `/search/issues?q=${encodeURIComponent(query)}&sort=created&order=desc`,
+    method: 'GET',
+    headers
+  });
+
+  if (result.total_count > 0) {
+    const number = result.items[0].number;
+    console.log(`既存の親Issue #${number} を使用します`);
+    return number;
+  }
+
+  if (isDryRun) {
+    console.log(`[Dry Run] 親Issue「Metabase Release ${versionMajorMinorX}」を作成します`);
+    return 'DRY-RUN-PARENT-ID';
+  }
+
+  console.log(`親Issue「Metabase Release ${versionMajorMinorX}」を作成します...`);
+  const newParent = await request({
+    hostname: 'api.github.com',
+    path: `/repos/${repoOwner}/${repoName}/issues`,
+    method: 'POST',
+    headers
+  }, {
+    title: `Metabase Release ${versionMajorMinorX}`,
+    body: `Metabaseのバージョンアップを行い、最新のバージョンに追従する。\n\nhttps://github.com/metabase/metabase/releases`
+  });
+  console.log(`親Issue #${newParent.number} を作成しました`);
+  return newParent.number;
+}
+
+// 輪番で次の担当者を決める
+// 戻り値: string | null（GitHubユーザー名。対象者なしの場合はnull）
+async function calculateNextAssignee(rotationMembers, { headers, repoOwner, repoName }) {
+  if (rotationMembers.length === 0) return null;
+
+  // metabase-update-issueラベルが付いた直近のIssueから前回の担当者を確認する
+  const query = `repo:${repoOwner}/${repoName} is:issue label:metabase-update-issue`;
+  const result = await request({
+    hostname: 'api.github.com',
+    path: `/search/issues?q=${encodeURIComponent(query)}&sort=created&order=desc&per_page=1`,
+    method: 'GET',
+    headers
+  });
+
+  const lastAssignee = result.total_count > 0 && result.items[0].assignee
+    ? result.items[0].assignee.login
+    : null;
+
+  if (!lastAssignee) return rotationMembers[0];
+
+  const idx = rotationMembers.indexOf(lastAssignee);
+  if (idx === -1 || idx === rotationMembers.length - 1) return rotationMembers[0];
+  return rotationMembers[idx + 1];
+}
+
+// 環境変数からコンテキストを構築する
+// 戻り値: { headers: object, repoOwner: string, repoName: string, isDryRun: boolean }
+function buildContext() {
+  // GITHUB_TOKEN: ワークフローの permissions で issues: write が必要
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) throw new Error('GITHUB_TOKEN が設定されていません');
+
+  // GITHUB_REPOSITORY: GitHubActionsが自動設定する変数。
+  // 形式: "owner/repo"（例: armg/dietplus-terraform）
+  const [repoOwner, repoName] = process.env.GITHUB_REPOSITORY.split('/');
+  const isDryRun = process.argv.includes('--dry-run');
   const headers = {
     'User-Agent': 'node.js',
     'Authorization': `token ${token}`,
-    'Accept': 'application/vnd.github+json'
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json'
   };
 
-  // 2. Check if Child Issue already exists
-  const searchChildQuery = `repo:${repoOwner}/${repoName} is:issue label:metabase-update-issue "Update Metabase to ${latestVersion}"`;
-  const childIssues = await request({
-    hostname: 'api.github.com',
-    path: `/search/issues?q=${encodeURIComponent(searchChildQuery)}`,
-    method: 'GET',
-    headers
-  });
+  return { headers, repoOwner, repoName, isDryRun };
+}
 
-  if (childIssues.total_count > 0) {
-    console.log(`Issue for ${latestVersion} already exists. Exiting.`);
+// JSONファイルから輪番メンバーを取得する
+// メンバーの追加・削除は .github/metabase-rotation-members.json を編集してPRを出す
+// 戻り値: string[]
+function parseRotationMembers() {
+  const filePath = path.join(__dirname, '../metabase-rotation-members.json');
+  const members = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (members.length === 0) console.warn('metabase-rotation-members.json が空です。Issueは未割当になります。');
+  return members;
+}
+
+// 子Issueを作成してSub-issueとして親Issueに紐づける
+async function createChildIssue({ metabaseLatestVersion, releaseUrl, parentIssueNumber, assignee, isDryRun }, { headers, repoOwner, repoName }) {
+  if (isDryRun) {
+    console.log(`[Dry Run] 子Issue「Update Metabase to ${metabaseLatestVersion}」を作成します`);
+    console.log(`[Dry Run] 担当者: ${assignee || '未割当'}`);
+    console.log(`[Dry Run] 親Issue #${parentIssueNumber} のSub-issueとして登録します`);
     return;
   }
 
-  // 3. Find or Create Parent Issue
-  const searchParentQuery = `repo:${repoOwner}/${repoName} is:issue "Metabase Release ${versionMajorMinorX}"`;
-  const parentIssues = await request({
+  console.log(`子Issue「Update Metabase to ${metabaseLatestVersion}」を作成します...`);
+  const newChild = await request({
     hostname: 'api.github.com',
-    path: `/search/issues?q=${encodeURIComponent(searchParentQuery)}`,
-    method: 'GET',
+    path: `/repos/${repoOwner}/${repoName}/issues`,
+    method: 'POST',
     headers
+  }, {
+    title: `Update Metabase to ${metabaseLatestVersion}`,
+    body: `${metabaseLatestVersion} がリリースされました。\n\n[リリースノート](${releaseUrl})\n\n親Issue: #${parentIssueNumber}`,
+    labels: ['metabase-update-issue'],
+    assignees: assignee ? [assignee] : []
   });
+  console.log(`子Issue #${newChild.number} を作成しました（担当: ${assignee}）`);
 
-  let parentIssueNumber;
-  if (parentIssues.total_count > 0) {
-    parentIssueNumber = parentIssues.items[0].number;
-    console.log(`Found Parent Issue #${parentIssueNumber}`);
-  } else {
-    if (isDryRun) {
-      console.log(`[Dry Run] Would create Parent Issue for ${versionMajorMinorX}`);
-      parentIssueNumber = "DRY-RUN-PARENT-ID";
-    } else {
-      console.log(`Creating Parent Issue for ${versionMajorMinorX}...`);
-      const newParent = await request({
-        hostname: 'api.github.com',
-        path: `/repos/${repoOwner}/${repoName}/issues`,
-        method: 'POST',
-        headers
-      }, {
-        title: `Metabase Release ${versionMajorMinorX}`,
-        body: `## Release Tracking for ${versionMajorMinorX}\n\n- [ ] Initial Release` // Initialize list
-      });
-      parentIssueNumber = newParent.number;
-      console.log(`Created Parent Issue #${parentIssueNumber}`);
-    }
+  console.log(`#${newChild.number} を親Issue #${parentIssueNumber} のSub-issueとして登録します...`);
+  await request({
+    hostname: 'api.github.com',
+    path: `/repos/${repoOwner}/${repoName}/issues/${parentIssueNumber}/sub_issues`,
+    method: 'POST',
+    headers
+  }, {
+    sub_issue_id: newChild.id
+  });
+  console.log('Sub-issueとして登録しました');
+}
+
+async function main() {
+  const githubConfig = buildContext();
+  const rotationMembers = parseRotationMembers();
+
+  if (githubConfig.isDryRun) console.log('--- DRY RUN MODE: Issueの作成・更新は行いません ---');
+
+  const { metabaseLatestVersion, versionMajorMinorX, releaseUrl } = await fetchLatestMetabaseRelease();
+
+  if (await checkChildIssueExists(metabaseLatestVersion, githubConfig)) {
+    console.log(`${metabaseLatestVersion} のIssueは既に存在します。終了します。`);
+    return;
   }
 
-  // 4. Calculate Assignee
-  let nextAssignee = null;
-  if (rotationMembers.length > 0) {
-    // Find last created issue with label metabase-update-issue to see who was assigned
-    // We sort by created desc to get the very last one
-    const lastIssueQuery = `repo:${repoOwner}/${repoName} is:issue label:metabase-update-issue sort:created-desc`;
-    const lastIssues = await request({
-      hostname: 'api.github.com',
-      path: `/search/issues?q=${encodeURIComponent(lastIssueQuery)}&per_page=1`,
-      method: 'GET',
-      headers
-    });
-
-    let lastAssignee = null;
-    if (lastIssues.total_count > 0 && lastIssues.items[0].assignee) {
-      lastAssignee = lastIssues.items[0].assignee.login;
-    }
-
-    if (lastAssignee) {
-      const idx = rotationMembers.indexOf(lastAssignee);
-      if (idx === -1 || idx === rotationMembers.length - 1) {
-        nextAssignee = rotationMembers[0];
-      } else {
-        nextAssignee = rotationMembers[idx + 1];
-      }
-    } else {
-      nextAssignee = rotationMembers[0];
-    }
-  }
-
-  // 5. Create Child Issue
-  if (isDryRun) {
-    console.log(`[Dry Run] Would create Child Issue: "Update Metabase to ${latestVersion}"`);
-    console.log(`[Dry Run] Would assign to: ${nextAssignee || 'No one'}`);
-    console.log(`[Dry Run] Would register as sub-issue of Parent Issue #${parentIssueNumber}`);
-  } else {
-    console.log(`Creating Child Issue for ${latestVersion}...`);
-    const newChild = await request({
-      hostname: 'api.github.com',
-      path: `/repos/${repoOwner}/${repoName}/issues`,
-      method: 'POST',
-      headers
-    }, {
-      title: `Update Metabase to ${latestVersion}`,
-      body: `New version ${latestVersion} is available.\n\n[Release Notes](${metabaseRelease.html_url})\n\nParent Issue: #${parentIssueNumber}`,
-      labels: ['metabase-update-issue'],
-      assignees: nextAssignee ? [nextAssignee] : []
-    });
-    console.log(`Created Child Issue #${newChild.number} assigned to ${nextAssignee}`);
-
-    // 6. Register Child Issue as Sub-issue of Parent
-    console.log(`Registering #${newChild.number} as sub-issue of #${parentIssueNumber}...`);
-    await request({
-      hostname: 'api.github.com',
-      path: `/repos/${repoOwner}/${repoName}/issues/${parentIssueNumber}/sub_issues`,
-      method: 'POST',
-      headers
-    }, {
-      sub_issue_id: newChild.id
-    });
-    console.log('Sub-issue registered.');
-  }
+  const parentIssueNumber = await findOrCreateParentIssue(versionMajorMinorX, githubConfig);
+  const assignee = await calculateNextAssignee(rotationMembers, githubConfig);
+  await createChildIssue({ metabaseLatestVersion, releaseUrl, parentIssueNumber, assignee, isDryRun: githubConfig.isDryRun }, githubConfig);
 }
 
 main().catch(error => {
